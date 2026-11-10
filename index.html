@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="DriveMode">
+<meta name="theme-color" content="#000000">
+<title>DriveMode</title>
+<style>
+  :root {
+    --bg: #000;
+    --text: #fff;
+    --dim: #565c66;
+    --green: #ff7a1a;
+    --amber: #ffd23f;
+    --red: #ff4d4d;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: -apple-system, "SF Pro Display", system-ui, sans-serif;
+    overflow: hidden; user-select: none; -webkit-user-select: none;
+  }
+  .app {
+    height: 100%;
+    display: flex; flex-direction: column;
+    padding: calc(env(safe-area-inset-top, 0px) + 16px) 20px calc(env(safe-area-inset-bottom, 0px) + 20px);
+  }
+  .status {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 17px; color: var(--dim);
+  }
+  .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--dim); }
+  .status[data-state="good"] .dot { background: var(--green); box-shadow: 0 0 10px var(--green); }
+  .status[data-state="ok"] .dot { background: var(--amber); }
+  .status[data-state="bad"] .dot { background: var(--red); }
+  .status[data-state="good"] { color: var(--green); }
+  .status[data-state="ok"] { color: var(--amber); }
+  .status[data-state="bad"] { color: var(--red); }
+
+  .speed-wrap {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+  }
+  .speed {
+    font-size: min(46vw, 38vh);
+    font-weight: 600; line-height: 1;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.04em;
+    transition: color .2s;
+  }
+  .speed.stale { color: #3a3f47; }
+  .unit { font-size: 24px; color: var(--dim); margin-top: 4px; }
+
+  .start {
+    position: absolute; inset: 0; z-index: 10;
+    background: var(--bg);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 20px; padding: 32px; text-align: center;
+  }
+  .start h1 { font-size: 34px; margin: 0; font-weight: 600; }
+  .start p { margin: 0; color: var(--dim); font-size: 17px; line-height: 1.4; max-width: 320px; }
+  .start button {
+    margin-top: 12px; width: 100%; max-width: 320px; height: 72px;
+    border: 0; border-radius: 20px; background: var(--green); color: #1a0a00;
+    font-size: 22px; font-weight: 600;
+  }
+  .start button:active { transform: scale(.98); }
+  .error { color: var(--red) !important; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <div class="status" id="status" data-state="off">
+    <span class="dot"></span><span id="statusText">GPS uit</span>
+  </div>
+  <div class="speed-wrap">
+    <div class="speed stale" id="speed">0</div>
+    <div class="unit">km/u</div>
+  </div>
+</div>
+
+<div class="start" id="start">
+  <h1>DriveMode</h1>
+  <p>Tik op Start om je locatie te gebruiken. Het scherm blijft aan zolang de app open is.</p>
+  <p id="startError" class="error hidden"></p>
+  <button id="startBtn">Start</button>
+</div>
+
+<script>
+(function () {
+  var speedEl = document.getElementById('speed');
+  var statusEl = document.getElementById('status');
+  var statusText = document.getElementById('statusText');
+  var startEl = document.getElementById('start');
+  var startErr = document.getElementById('startError');
+
+  var watchId = null;
+  var wakeLock = null;
+  var lastFix = 0;
+  var shown = 0;
+
+  function setStatus(state, text) {
+    statusEl.dataset.state = state;
+    statusText.textContent = text;
+  }
+
+  function showSpeed(kmh, stale) {
+    speedEl.textContent = String(Math.round(kmh));
+    speedEl.classList.toggle('stale', !!stale);
+  }
+
+  function onPosition(pos) {
+    lastFix = Date.now();
+    var c = pos.coords;
+    var acc = c.accuracy;
+
+    if (acc <= 20) setStatus('good', 'GPS goed');
+    else if (acc <= 50) setStatus('ok', 'GPS matig');
+    else setStatus('bad', 'GPS zwak');
+
+    if (c.speed === null || c.speed === undefined || isNaN(c.speed)) {
+      showSpeed(shown, true);
+      return;
+    }
+    var kmh = Math.max(0, c.speed * 3.6);
+    if (kmh < 2) kmh = 0; // GPS-ruis bij stilstand wegfilteren
+    shown = shown === 0 ? kmh : shown * 0.4 + kmh * 0.6; // lichte afvlakking
+    if (kmh === 0) shown = 0;
+    showSpeed(shown, false);
+  }
+
+  function onError(err) {
+    if (err.code === 1) {
+      setStatus('bad', 'Geen toestemming voor locatie');
+      startErr.textContent = 'Locatie geweigerd. Zet het aan via Instellingen > Privacy > Locatievoorzieningen > Safari-websites (of DriveMode).';
+      startErr.classList.remove('hidden');
+      startEl.classList.remove('hidden');
+      stopWatch();
+    } else {
+      setStatus('bad', 'Geen GPS-signaal');
+      showSpeed(shown, true);
+    }
+  }
+
+  function stopWatch() {
+    if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+  }
+
+  function startWatch() {
+    stopWatch();
+    watchId = navigator.geolocation.watchPosition(onPosition, onError, {
+      enableHighAccuracy: true, maximumAge: 0, timeout: 15000
+    });
+  }
+
+  async function requestWakeLock() {
+    try {
+      if ('wakeLock' in navigator) {
+        wakeLock = await navigator.wakeLock.request('screen');
+      }
+    } catch (e) { /* niet kritiek */ }
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && watchId !== null) {
+      requestWakeLock();
+      startWatch();
+    }
+  });
+
+  // Controleer elke seconde of er nog verse GPS-data binnenkomt
+  setInterval(function () {
+    if (watchId === null) return;
+    if (Date.now() - lastFix > 5000) {
+      setStatus('bad', 'Geen GPS-signaal');
+      showSpeed(shown, true);
+    }
+  }, 1000);
+
+  document.getElementById('startBtn').addEventListener('click', function () {
+    if (!('geolocation' in navigator)) {
+      startErr.textContent = 'Dit apparaat ondersteunt geen GPS.';
+      startErr.classList.remove('hidden');
+      return;
+    }
+    startErr.classList.add('hidden');
+    startEl.classList.add('hidden');
+    setStatus('off', 'GPS zoeken…');
+    requestWakeLock();
+    startWatch();
+  });
+})();
+</script>
+</body>
+</html>
