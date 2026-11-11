@@ -147,6 +147,7 @@
 <script>
 (function () {
   // ---- Instellingen ----
+  var MAP_STYLE = 'https://tiles.openfreemap.org/styles/dark'; // gratis, geen API-sleutel
   var MAP_ZOOM = 16;
   var OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
   var QUERY_RADIUS = 250;    // meter rondom je positie
@@ -205,21 +206,9 @@
       return;
     }
     if (!map) {
-      var tiles = ['a', 'b', 'c'].map(function (s) {
-        return 'https://' + s + '.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png';
-      });
       map = new maplibregl.Map({
         container: 'map',
-        style: {
-          version: 8,
-          sources: {
-            carto: {
-              type: 'raster', tiles: tiles, tileSize: 256,
-              attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> © <a href="https://carto.com/attributions">CARTO</a>'
-            }
-          },
-          layers: [{ id: 'carto', type: 'raster', source: 'carto' }]
-        },
+        style: MAP_STYLE,
         center: [lon, lat], zoom: MAP_ZOOM,
         interactive: false, fadeDuration: 0,
         attributionControl: { compact: true }
@@ -331,143 +320,4 @@
       if (!m) { unsure = true; continue; }
       var val = parseSpeed(m[1]);
       if (val !== null && /^\d{1,2}:\d{2}-\d{1,2}:\d{2}(\s*,\s*\d{1,2}:\d{2}-\d{1,2}:\d{2})*$/.test(m[2])) {
-        if (inTimeRanges(m[2])) return { kmh: val, unsure: false };
-      } else {
-        unsure = true;
-      }
-    }
-    return { kmh: base, unsure: unsure };
-  }
-
-  function limitFor(tags, forward) {
-    var base = tags.maxspeed, cond = tags['maxspeed:conditional'];
-    var f = tags['maxspeed:forward'], b = tags['maxspeed:backward'];
-    if (forward === true && f) base = f;
-    else if (forward === false && b) base = b;
-    else if (!base && f && b && f === b) base = f;
-    if (forward === true && tags['maxspeed:forward:conditional']) cond = tags['maxspeed:forward:conditional'];
-    if (forward === false && tags['maxspeed:backward:conditional']) cond = tags['maxspeed:backward:conditional'];
-    var v = parseSpeed(base);
-    if (v === null) return null;
-    if (v === 'none') return { kmh: 'none', unsure: false };
-    return applyConditional(v, cond);
-  }
-
-  function updateLimit() {
-    if (!lastPos) return;
-    if (lastPos.acc > MAX_ACCURACY) { showLimit(null, 'GPS te onnauwkeurig'); return; }
-    if (!ways.length) { showLimit(null, querying ? 'laden…' : 'geen data'); return; }
-    var m = matchWay(lastPos.lat, lastPos.lon, lastHeading);
-    if (!m) { currentWayId = null; showLimit(null, 'geen weg gevonden'); return; }
-    currentWayId = m.way.id;
-    showLimit(limitFor(m.way.tags || {}, m.forward), 'niet in OpenStreetMap');
-  }
-
-  function showLimit(l, reason) {
-    currentLimit = (l && typeof l.kmh === 'number') ? l.kmh : null;
-    if (!l) {
-      signEl.className = 'sign unknown';
-      signEl.textContent = 'onbekend';
-      signLabel.textContent = reason || 'geen data';
-    } else if (l.kmh === 'none') {
-      signEl.className = 'sign unknown';
-      signEl.textContent = 'geen limiet';
-      signLabel.textContent = 'indicatief (OSM)';
-    } else {
-      signEl.className = 'sign';
-      signEl.textContent = String(l.kmh);
-      signLabel.textContent = l.unsure ? 'indicatief · kan afwijken' : 'indicatief (OSM)';
-    }
-    checkWarning();
-  }
-
-  // ---- GPS ----
-  function onPosition(pos) {
-    lastFix = Date.now();
-    var c = pos.coords;
-    var acc = c.accuracy;
-
-    if (acc <= 20) setStatus('good', 'GPS goed');
-    else if (acc <= 50) setStatus('ok', 'GPS matig');
-    else setStatus('bad', 'GPS zwak');
-
-    lastPos = { lat: c.latitude, lon: c.longitude, acc: acc };
-    var hasSpeed = !(c.speed === null || c.speed === undefined || isNaN(c.speed));
-    if (hasSpeed && c.speed > 1.5 && c.heading !== null && !isNaN(c.heading)) {
-      lastHeading = c.heading;
-    }
-
-    updateMap(c.latitude, c.longitude);
-    maybeQuery(c.latitude, c.longitude);
-    updateLimit();
-
-    if (!hasSpeed) { showSpeed(shown, true); return; }
-    var kmh = Math.max(0, c.speed * 3.6);
-    if (kmh < 2) kmh = 0; // GPS-ruis bij stilstand wegfilteren
-    shown = shown === 0 ? kmh : shown * 0.4 + kmh * 0.6; // lichte afvlakking
-    if (kmh === 0) shown = 0;
-    showSpeed(shown, false);
-  }
-
-  function onError(err) {
-    if (err.code === 1) {
-      setStatus('bad', 'Geen toestemming voor locatie');
-      startErr.textContent = 'Locatie geweigerd. Zet het aan via Instellingen > Privacy > Locatievoorzieningen > Safari-websites (of DriveMode).';
-      startErr.classList.remove('hidden');
-      startEl.classList.remove('hidden');
-      stopWatch();
-    } else {
-      setStatus('bad', 'Geen GPS-signaal');
-      showSpeed(shown, true);
-    }
-  }
-
-  function stopWatch() {
-    if (watchId !== null) navigator.geolocation.clearWatch(watchId);
-    watchId = null;
-  }
-  function startWatch() {
-    stopWatch();
-    watchId = navigator.geolocation.watchPosition(onPosition, onError, {
-      enableHighAccuracy: true, maximumAge: 0, timeout: 15000
-    });
-  }
-
-  async function requestWakeLock() {
-    try {
-      if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
-    } catch (e) { /* niet kritiek */ }
-  }
-
-  document.addEventListener('visibilitychange', function () {
-    if (document.visibilityState === 'visible' && watchId !== null) {
-      requestWakeLock();
-      startWatch();
-    }
-  });
-
-  // Elke seconde: komt er nog verse GPS-data binnen?
-  setInterval(function () {
-    if (watchId === null) return;
-    if (Date.now() - lastFix > 5000) {
-      setStatus('bad', 'Geen GPS-signaal');
-      showSpeed(shown, true);
-    }
-  }, 1000);
-
-  document.getElementById('startBtn').addEventListener('click', function () {
-    if (!('geolocation' in navigator)) {
-      startErr.textContent = 'Dit apparaat ondersteunt geen GPS.';
-      startErr.classList.remove('hidden');
-      return;
-    }
-    startErr.classList.add('hidden');
-    startEl.classList.add('hidden');
-    setStatus('off', 'GPS zoeken…');
-    requestWakeLock();
-    startWatch();
-  });
-})();
-</script>
-</body>
-</html>
+        if (inTimeRanges(m[2]))
