@@ -8,14 +8,26 @@
 <meta name="apple-mobile-web-app-title" content="DriveMode">
 <meta name="theme-color" content="#000000">
 <title>DriveMode</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <style>
   :root {
     --bg: #000;
     --text: #fff;
     --dim: #565c66;
-    --green: #ff7a1a;
+    --panel: #0d0f12;
+    --stale: #3a3f47;
+    --accent: #ff7a1a;
+    --accent-text: #1a0a00;
     --amber: #ffd23f;
     --red: #ff4d4d;
+    --sign-bg: #d8d8d8;
+    --sign-ring: #d92b2b;
+    --sign-text: #111;
+    --sign-unknown-bg: #15181c;
+    --sign-unknown-ring: #3a3f47;
+    --sign-unknown-text: #8a9099;
+    --marker: #ff7a1a;
+    --marker-border: #fff;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body {
@@ -24,39 +36,67 @@
     overflow: hidden; user-select: none; -webkit-user-select: none;
   }
   .app {
-    height: 100%;
-    display: flex; flex-direction: column;
-    padding: calc(env(safe-area-inset-top, 0px) + 16px) 20px calc(env(safe-area-inset-bottom, 0px) + 20px);
+    height: 100%; display: flex; flex-direction: column;
+    padding: calc(env(safe-area-inset-top, 0px) + 12px) 16px calc(env(safe-area-inset-bottom, 0px) + 16px);
   }
-  .status {
-    display: flex; align-items: center; gap: 10px;
-    font-size: 17px; color: var(--dim);
-  }
+
+  /* GPS-status */
+  .status { display: flex; align-items: center; gap: 10px; font-size: 17px; color: var(--dim); }
   .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--dim); }
-  .status[data-state="good"] .dot { background: var(--green); box-shadow: 0 0 10px var(--green); }
+  .status[data-state="good"] .dot { background: var(--accent); box-shadow: 0 0 10px var(--accent); }
   .status[data-state="ok"] .dot { background: var(--amber); }
   .status[data-state="bad"] .dot { background: var(--red); }
-  .status[data-state="good"] { color: var(--green); }
+  .status[data-state="good"] { color: var(--accent); }
   .status[data-state="ok"] { color: var(--amber); }
   .status[data-state="bad"] { color: var(--red); }
 
-  .speed-wrap {
-    flex: 1; display: flex; flex-direction: column;
-    align-items: center; justify-content: center;
+  /* Kaart */
+  .map {
+    position: relative; height: 26vh; margin-top: 12px;
+    border-radius: 16px; overflow: hidden; background: var(--panel);
   }
-  .speed {
-    font-size: min(46vw, 38vh);
-    font-weight: 600; line-height: 1;
-    font-variant-numeric: tabular-nums;
-    letter-spacing: -0.04em;
-    transition: color .2s;
+  .map-empty {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--dim); font-size: 15px; text-align: center; padding: 16px;
   }
-  .speed.stale { color: #3a3f47; }
-  .unit { font-size: 24px; color: var(--dim); margin-top: 4px; }
+  .me {
+    width: 18px; height: 18px; border-radius: 50%;
+    background: var(--marker); border: 3px solid var(--marker-border);
+    box-shadow: 0 0 10px var(--marker);
+  }
 
+  /* Snelheid + bord */
+  .main { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6vw; }
+  .speed-box { display: flex; flex-direction: column; align-items: center; }
+  .speed {
+    font-size: min(34vw, 24vh); font-weight: 600; line-height: 1;
+    font-variant-numeric: tabular-nums; letter-spacing: -0.04em; transition: color .2s;
+  }
+  .speed.stale { color: var(--stale); }
+  .speed.over { color: var(--red); }
+  .unit { font-size: 22px; color: var(--dim); margin-top: 4px; }
+
+  .sign-box { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .sign {
+    --sign-size: min(30vw, 17vh);
+    width: var(--sign-size); height: var(--sign-size); border-radius: 50%;
+    background: var(--sign-bg); color: var(--sign-text);
+    border: calc(var(--sign-size) * 0.12) solid var(--sign-ring);
+    display: flex; align-items: center; justify-content: center; text-align: center;
+    font-weight: 700; font-size: calc(var(--sign-size) * 0.36);
+    font-variant-numeric: tabular-nums; line-height: 1.05;
+  }
+  .sign.unknown {
+    background: var(--sign-unknown-bg); color: var(--sign-unknown-text);
+    border-color: var(--sign-unknown-ring); font-size: calc(var(--sign-size) * 0.14); font-weight: 600;
+  }
+  .sign.warn { animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 calc(var(--sign-size) * 0.08) var(--red); } }
+  .sign-label { font-size: 13px; color: var(--dim); text-align: center; max-width: 34vw; }
+
+  /* Startscherm */
   .start {
-    position: absolute; inset: 0; z-index: 10;
-    background: var(--bg);
+    position: absolute; inset: 0; z-index: 10; background: var(--bg);
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: 20px; padding: 32px; text-align: center;
   }
@@ -64,7 +104,7 @@
   .start p { margin: 0; color: var(--dim); font-size: 17px; line-height: 1.4; max-width: 320px; }
   .start button {
     margin-top: 12px; width: 100%; max-width: 320px; height: 72px;
-    border: 0; border-radius: 20px; background: var(--green); color: #1a0a00;
+    border: 0; border-radius: 20px; background: var(--accent); color: var(--accent-text);
     font-size: 22px; font-weight: 600;
   }
   .start button:active { transform: scale(.98); }
@@ -78,42 +118,270 @@
   <div class="status" id="status" data-state="off">
     <span class="dot"></span><span id="statusText">GPS uit</span>
   </div>
-  <div class="speed-wrap">
-    <div class="speed stale" id="speed">0</div>
-    <div class="unit">km/u</div>
+
+  <div class="map" id="map">
+    <div class="map-empty" id="mapEmpty">Kaart verschijnt zodra er GPS is</div>
+  </div>
+
+  <div class="main">
+    <div class="speed-box">
+      <div class="speed stale" id="speed">0</div>
+      <div class="unit">km/u</div>
+    </div>
+    <div class="sign-box">
+      <div class="sign unknown" id="sign">onbekend</div>
+      <div class="sign-label" id="signLabel">maximumsnelheid indicatief</div>
+    </div>
   </div>
 </div>
 
 <div class="start" id="start">
   <h1>DriveMode</h1>
   <p>Tik op Start om je locatie te gebruiken. Het scherm blijft aan zolang de app open is.</p>
+  <p>De maximumsnelheid komt uit OpenStreetMap en is alleen indicatief. Let altijd op de borden langs de weg.</p>
   <p id="startError" class="error hidden"></p>
   <button id="startBtn">Start</button>
 </div>
 
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script>
 (function () {
+  // ---- Instellingen ----
+  var MAP_ZOOM = 16;
+  var OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
+  var QUERY_RADIUS = 250;    // meter rondom je positie
+  var REQUERY_DIST = 150;    // nieuwe wegen ophalen na zoveel meter
+  var MIN_QUERY_GAP = 6000;  // minimaal 6 s tussen verzoeken
+  var MATCH_MAX_DIST = 35;   // verder van een weg = onbekend
+  var MAX_ACCURACY = 60;     // GPS slechter dan dit = onbekend
+  var WARN_MARGIN = 3;       // km/u boven limiet voor waarschuwing
+
   var speedEl = document.getElementById('speed');
   var statusEl = document.getElementById('status');
   var statusText = document.getElementById('statusText');
   var startEl = document.getElementById('start');
   var startErr = document.getElementById('startError');
+  var mapEmpty = document.getElementById('mapEmpty');
+  var signEl = document.getElementById('sign');
+  var signLabel = document.getElementById('signLabel');
 
-  var watchId = null;
-  var wakeLock = null;
-  var lastFix = 0;
-  var shown = 0;
+  var watchId = null, wakeLock = null, lastFix = 0, shown = 0, isStale = true;
+  var map = null, marker = null, mapCenter = null;
+  var ways = [], queryPos = null, queryTime = 0, querying = false, backoffUntil = 0;
+  var lastPos = null, lastHeading = null, currentWayId = null, currentLimit = null;
 
+  // ---- Hulpfuncties ----
+  function distM(aLat, aLon, bLat, bLon) {
+    var k = Math.cos(aLat * Math.PI / 180);
+    var dx = (bLon - aLon) * 111320 * k, dy = (bLat - aLat) * 110540;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+  function angDiff(a, b) {
+    var d = Math.abs(a - b) % 360;
+    return d > 180 ? 360 - d : d;
+  }
+
+  // ---- Status en snelheid ----
   function setStatus(state, text) {
     statusEl.dataset.state = state;
     statusText.textContent = text;
   }
-
   function showSpeed(kmh, stale) {
+    isStale = !!stale;
     speedEl.textContent = String(Math.round(kmh));
-    speedEl.classList.toggle('stale', !!stale);
+    speedEl.classList.toggle('stale', isStale);
+    checkWarning();
+  }
+  function checkWarning() {
+    var over = currentLimit !== null && !isStale && Math.round(shown) > currentLimit + WARN_MARGIN;
+    speedEl.classList.toggle('over', over);
+    signEl.classList.toggle('warn', over);
   }
 
+  // ---- Kaart ----
+  function updateMap(lat, lon) {
+    if (typeof maplibregl === 'undefined') {
+      mapEmpty.textContent = 'Kaart kon niet laden (geen internet?)';
+      return;
+    }
+    if (!map) {
+      var tiles = ['a', 'b', 'c'].map(function (s) {
+        return 'https://' + s + '.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png';
+      });
+      map = new maplibregl.Map({
+        container: 'map',
+        style: {
+          version: 8,
+          sources: {
+            carto: {
+              type: 'raster', tiles: tiles, tileSize: 256,
+              attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> © <a href="https://carto.com/attributions">CARTO</a>'
+            }
+          },
+          layers: [{ id: 'carto', type: 'raster', source: 'carto' }]
+        },
+        center: [lon, lat], zoom: MAP_ZOOM,
+        interactive: false, fadeDuration: 0,
+        attributionControl: { compact: true }
+      });
+      var el = document.createElement('div');
+      el.className = 'me';
+      marker = new maplibregl.Marker({ element: el }).setLngLat([lon, lat]).addTo(map);
+      mapCenter = [lat, lon];
+      mapEmpty.classList.add('hidden');
+      return;
+    }
+    marker.setLngLat([lon, lat]);
+    if (distM(mapCenter[0], mapCenter[1], lat, lon) > 8) {
+      map.jumpTo({ center: [lon, lat] }); // geen animatie = zuiniger
+      mapCenter = [lat, lon];
+    }
+  }
+
+  // ---- Maximumsnelheid (OpenStreetMap / Overpass) ----
+  function maybeQuery(lat, lon) {
+    var now = Date.now();
+    if (querying || now < backoffUntil) return;
+    if (queryPos) {
+      if (distM(queryPos[0], queryPos[1], lat, lon) < REQUERY_DIST) return;
+      if (now - queryTime < MIN_QUERY_GAP) return;
+    }
+    querying = true;
+    var q = '[out:json][timeout:10];way(around:' + QUERY_RADIUS + ',' + lat.toFixed(6) + ',' + lon.toFixed(6) + ')' +
+      '["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|road|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"];out tags geom;';
+    var ctrl = new AbortController();
+    var timer = setTimeout(function () { ctrl.abort(); }, 15000);
+    fetch(OVERPASS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'data=' + encodeURIComponent(q),
+      signal: ctrl.signal
+    }).then(function (r) {
+      if (r.status === 429 || r.status === 504) { backoffUntil = Date.now() + 30000; throw new Error('druk'); }
+      if (!r.ok) throw new Error('fout');
+      return r.json();
+    }).then(function (d) {
+      ways = (d.elements || []).filter(function (e) {
+        return e.type === 'way' && e.geometry && e.geometry.length > 1;
+      });
+      queryPos = [lat, lon];
+      queryTime = Date.now();
+      updateLimit();
+    }).catch(function () {
+      if (Date.now() >= backoffUntil) backoffUntil = Date.now() + 10000;
+      updateLimit();
+    }).finally(function () {
+      clearTimeout(timer);
+      querying = false;
+    });
+  }
+
+  function matchWay(lat, lon, heading) {
+    var k = Math.cos(lat * Math.PI / 180), best = null;
+    ways.forEach(function (w) {
+      var g = w.geometry;
+      for (var i = 0; i < g.length - 1; i++) {
+        var ax = (g[i].lon - lon) * 111320 * k, ay = (g[i].lat - lat) * 110540;
+        var bx = (g[i + 1].lon - lon) * 111320 * k, by = (g[i + 1].lat - lat) * 110540;
+        var dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
+        var t = len2 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len2)) : 0;
+        var px = ax + t * dx, py = ay + t * dy;
+        var d = Math.sqrt(px * px + py * py);
+        var segBear = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
+        var score = d, diff = null;
+        if (heading !== null) {
+          diff = angDiff(heading, segBear);
+          score += Math.min(diff, 180 - diff) / 90 * 20; // weg in rijrichting krijgt voorkeur
+        }
+        if (w.id === currentWayId) score -= 5; // voorkomt flikkeren bij kruisingen
+        if (!best || score < best.score) {
+          best = { score: score, d: d, way: w, forward: diff === null ? null : diff < 90 };
+        }
+      }
+    });
+    if (!best || best.d > MATCH_MAX_DIST) return null;
+    return best;
+  }
+
+  function parseSpeed(v) {
+    if (!v) return null;
+    v = String(v).trim();
+    if (v === 'none') return 'none';
+    var m = v.match(/^(\d+(?:\.\d+)?)\s*(mph|km\/h|kmh)?$/i);
+    if (!m) return null; // bijv. "NL:urban": niet raden
+    var n = parseFloat(m[1]);
+    if (m[2] && m[2].toLowerCase() === 'mph') n = n * 1.609;
+    return Math.round(n);
+  }
+
+  function inTimeRanges(str) {
+    var now = new Date(), mins = now.getHours() * 60 + now.getMinutes();
+    return str.split(',').some(function (r) {
+      var m = r.trim().match(/^(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})$/);
+      var s = +m[1] * 60 + +m[2], e = +m[3] * 60 + +m[4];
+      return s <= e ? (mins >= s && mins < e) : (mins >= s || mins < e);
+    });
+  }
+
+  function applyConditional(base, cond) {
+    if (!cond) return { kmh: base, unsure: false };
+    var unsure = false, parts = cond.split(';');
+    for (var i = 0; i < parts.length; i++) {
+      var m = parts[i].match(/^\s*([^@]+?)\s*@\s*\(?\s*([^)]*?)\s*\)?\s*$/);
+      if (!m) { unsure = true; continue; }
+      var val = parseSpeed(m[1]);
+      if (val !== null && /^\d{1,2}:\d{2}-\d{1,2}:\d{2}(\s*,\s*\d{1,2}:\d{2}-\d{1,2}:\d{2})*$/.test(m[2])) {
+        if (inTimeRanges(m[2])) return { kmh: val, unsure: false };
+      } else {
+        unsure = true;
+      }
+    }
+    return { kmh: base, unsure: unsure };
+  }
+
+  function limitFor(tags, forward) {
+    var base = tags.maxspeed, cond = tags['maxspeed:conditional'];
+    var f = tags['maxspeed:forward'], b = tags['maxspeed:backward'];
+    if (forward === true && f) base = f;
+    else if (forward === false && b) base = b;
+    else if (!base && f && b && f === b) base = f;
+    if (forward === true && tags['maxspeed:forward:conditional']) cond = tags['maxspeed:forward:conditional'];
+    if (forward === false && tags['maxspeed:backward:conditional']) cond = tags['maxspeed:backward:conditional'];
+    var v = parseSpeed(base);
+    if (v === null) return null;
+    if (v === 'none') return { kmh: 'none', unsure: false };
+    return applyConditional(v, cond);
+  }
+
+  function updateLimit() {
+    if (!lastPos) return;
+    if (lastPos.acc > MAX_ACCURACY) { showLimit(null, 'GPS te onnauwkeurig'); return; }
+    if (!ways.length) { showLimit(null, querying ? 'laden…' : 'geen data'); return; }
+    var m = matchWay(lastPos.lat, lastPos.lon, lastHeading);
+    if (!m) { currentWayId = null; showLimit(null, 'geen weg gevonden'); return; }
+    currentWayId = m.way.id;
+    showLimit(limitFor(m.way.tags || {}, m.forward), 'niet in OpenStreetMap');
+  }
+
+  function showLimit(l, reason) {
+    currentLimit = (l && typeof l.kmh === 'number') ? l.kmh : null;
+    if (!l) {
+      signEl.className = 'sign unknown';
+      signEl.textContent = 'onbekend';
+      signLabel.textContent = reason || 'geen data';
+    } else if (l.kmh === 'none') {
+      signEl.className = 'sign unknown';
+      signEl.textContent = 'geen limiet';
+      signLabel.textContent = 'indicatief (OSM)';
+    } else {
+      signEl.className = 'sign';
+      signEl.textContent = String(l.kmh);
+      signLabel.textContent = l.unsure ? 'indicatief · kan afwijken' : 'indicatief (OSM)';
+    }
+    checkWarning();
+  }
+
+  // ---- GPS ----
   function onPosition(pos) {
     lastFix = Date.now();
     var c = pos.coords;
@@ -123,10 +391,17 @@
     else if (acc <= 50) setStatus('ok', 'GPS matig');
     else setStatus('bad', 'GPS zwak');
 
-    if (c.speed === null || c.speed === undefined || isNaN(c.speed)) {
-      showSpeed(shown, true);
-      return;
+    lastPos = { lat: c.latitude, lon: c.longitude, acc: acc };
+    var hasSpeed = !(c.speed === null || c.speed === undefined || isNaN(c.speed));
+    if (hasSpeed && c.speed > 1.5 && c.heading !== null && !isNaN(c.heading)) {
+      lastHeading = c.heading;
     }
+
+    updateMap(c.latitude, c.longitude);
+    maybeQuery(c.latitude, c.longitude);
+    updateLimit();
+
+    if (!hasSpeed) { showSpeed(shown, true); return; }
     var kmh = Math.max(0, c.speed * 3.6);
     if (kmh < 2) kmh = 0; // GPS-ruis bij stilstand wegfilteren
     shown = shown === 0 ? kmh : shown * 0.4 + kmh * 0.6; // lichte afvlakking
@@ -151,7 +426,6 @@
     if (watchId !== null) navigator.geolocation.clearWatch(watchId);
     watchId = null;
   }
-
   function startWatch() {
     stopWatch();
     watchId = navigator.geolocation.watchPosition(onPosition, onError, {
@@ -161,9 +435,7 @@
 
   async function requestWakeLock() {
     try {
-      if ('wakeLock' in navigator) {
-        wakeLock = await navigator.wakeLock.request('screen');
-      }
+      if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
     } catch (e) { /* niet kritiek */ }
   }
 
@@ -174,7 +446,7 @@
     }
   });
 
-  // Controleer elke seconde of er nog verse GPS-data binnenkomt
+  // Elke seconde: komt er nog verse GPS-data binnen?
   setInterval(function () {
     if (watchId === null) return;
     if (Date.now() - lastFix > 5000) {
