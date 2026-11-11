@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="DriveMode">
@@ -149,13 +150,18 @@
   // ---- Instellingen ----
   var MAP_STYLE = 'https://tiles.openfreemap.org/styles/dark'; // gratis, geen API-sleutel
   var MAP_ZOOM = 16;
-  var OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
-  var QUERY_RADIUS = 250;    // meter rondom je positie
-  var REQUERY_DIST = 150;    // nieuwe wegen ophalen na zoveel meter
-  var MIN_QUERY_GAP = 6000;  // minimaal 6 s tussen verzoeken
-  var MATCH_MAX_DIST = 35;   // verder van een weg = onbekend
-  var MAX_ACCURACY = 60;     // GPS slechter dan dit = onbekend
-  var WARN_MARGIN = 3;       // km/u boven limiet voor waarschuwing
+  var OVERPASS_URLS = [
+    'https://overpass-api.de/api/interpreter',
+    'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+    'https://overpass.private.coffee/api/interpreter'
+  ];
+  var QUERY_RADIUS = 700;     // meter rondom je positie
+  var REQUERY_DIST = 350;     // nieuwe wegen ophalen na zoveel meter
+  var MIN_QUERY_GAP = 12000;  // minimaal 12 s tussen verzoeken
+  var SERVER_TIMEOUT = 12000; // max wachttijd per server
+  var MATCH_MAX_DIST = 35;    // verder van een weg = onbekend
+  var MAX_ACCURACY = 60;      // GPS slechter dan dit = onbekend
+  var WARN_MARGIN = 3;        // km/u boven limiet voor waarschuwing
 
   var speedEl = document.getElementById('speed');
   var statusEl = document.getElementById('status');
@@ -168,7 +174,7 @@
 
   var watchId = null, wakeLock = null, lastFix = 0, shown = 0, isStale = true;
   var map = null, marker = null, mapCenter = null;
-  var ways = [], queryPos = null, queryTime = 0, querying = false, backoffUntil = 0;
+  var ways = [], queryPos = null, queryTime = 0, querying = false, backoffUntil = 0, serverIdx = 0;
   var lastPos = null, lastHeading = null, currentWayId = null, currentLimit = null;
 
   // ---- Hulpfuncties ----
@@ -228,6 +234,40 @@
   }
 
   // ---- Maximumsnelheid (OpenStreetMap / Overpass) ----
+  function fetchFrom(i, q) {
+    var ctrl = new AbortController();
+    var timer = setTimeout(function () { ctrl.abort(); }, SERVER_TIMEOUT);
+    return fetch(OVERPASS_URLS[i], {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'data=' + encodeURIComponent(q),
+      signal: ctrl.signal
+    }).then(function (r) {
+      if (!r.ok) throw new Error('server ' + r.status);
+      return r.json();
+    }).then(function (d) {
+      if (d.remark && /error/i.test(d.remark)) throw new Error('onvolledig antwoord');
+      return d;
+    }).finally(function () {
+      clearTimeout(timer);
+    });
+  }
+
+  // Probeert de servers om de beurt; faalt er één, dan meteen de volgende
+  function fetchOverpass(q) {
+    var start = serverIdx, attempt = 0;
+    serverIdx = (serverIdx + 1) % OVERPASS_URLS.length;
+    function tryNext() {
+      var i = (start + attempt) % OVERPASS_URLS.length;
+      return fetchFrom(i, q).catch(function (e) {
+        attempt++;
+        if (attempt >= OVERPASS_URLS.length) throw e;
+        return tryNext();
+      });
+    }
+    return tryNext();
+  }
+
   function maybeQuery(lat, lon) {
     var now = Date.now();
     if (querying || now < backoffUntil) return;
@@ -237,19 +277,8 @@
     }
     querying = true;
     var q = '[out:json][timeout:10];way(around:' + QUERY_RADIUS + ',' + lat.toFixed(6) + ',' + lon.toFixed(6) + ')' +
-      '["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|service|road|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"];out tags geom;';
-    var ctrl = new AbortController();
-    var timer = setTimeout(function () { ctrl.abort(); }, 15000);
-    fetch(OVERPASS_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'data=' + encodeURIComponent(q),
-      signal: ctrl.signal
-    }).then(function (r) {
-      if (r.status === 429 || r.status === 504) { backoffUntil = Date.now() + 30000; throw new Error('druk'); }
-      if (!r.ok) throw new Error('fout');
-      return r.json();
-    }).then(function (d) {
+      '["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|road|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"];out tags geom;';
+    fetchOverpass(q).then(function (d) {
       ways = (d.elements || []).filter(function (e) {
         return e.type === 'way' && e.geometry && e.geometry.length > 1;
       });
@@ -257,10 +286,9 @@
       queryTime = Date.now();
       updateLimit();
     }).catch(function () {
-      if (Date.now() >= backoffUntil) backoffUntil = Date.now() + 10000;
+      backoffUntil = Date.now() + 20000; // alle servers faalden: even wachten
       updateLimit();
     }).finally(function () {
-      clearTimeout(timer);
       querying = false;
     });
   }
@@ -320,4 +348,146 @@
       if (!m) { unsure = true; continue; }
       var val = parseSpeed(m[1]);
       if (val !== null && /^\d{1,2}:\d{2}-\d{1,2}:\d{2}(\s*,\s*\d{1,2}:\d{2}-\d{1,2}:\d{2})*$/.test(m[2])) {
-        if (inTimeRanges(m[2]))
+        if (inTimeRanges(m[2])) return { kmh: val, unsure: false };
+      } else {
+        unsure = true;
+      }
+    }
+    return { kmh: base, unsure: unsure };
+  }
+
+  function limitFor(tags, forward) {
+    var base = tags.maxspeed, cond = tags['maxspeed:conditional'];
+    var f = tags['maxspeed:forward'], b = tags['maxspeed:backward'];
+    if (forward === true && f) base = f;
+    else if (forward === false && b) base = b;
+    else if (!base && f && b && f === b) base = f;
+    if (forward === true && tags['maxspeed:forward:conditional']) cond = tags['maxspeed:forward:conditional'];
+    if (forward === false && tags['maxspeed:backward:conditional']) cond = tags['maxspeed:backward:conditional'];
+    var v = parseSpeed(base);
+    if (v === null) return null;
+    if (v === 'none') return { kmh: 'none', unsure: false };
+    return applyConditional(v, cond);
+  }
+
+  function updateLimit() {
+    if (!lastPos) return;
+    if (lastPos.acc > MAX_ACCURACY) { showLimit(null, 'GPS te onnauwkeurig'); return; }
+    if (!ways.length) {
+      showLimit(null, querying ? 'laden…' : (Date.now() < backoffUntil ? 'server bezet, opnieuw…' : 'geen data'));
+      return;
+    }
+    var m = matchWay(lastPos.lat, lastPos.lon, lastHeading);
+    if (!m) { currentWayId = null; showLimit(null, 'geen weg gevonden'); return; }
+    currentWayId = m.way.id;
+    showLimit(limitFor(m.way.tags || {}, m.forward), 'niet in OpenStreetMap');
+  }
+
+  function showLimit(l, reason) {
+    currentLimit = (l && typeof l.kmh === 'number') ? l.kmh : null;
+    if (!l) {
+      signEl.className = 'sign unknown';
+      signEl.textContent = 'onbekend';
+      signLabel.textContent = reason || 'geen data';
+    } else if (l.kmh === 'none') {
+      signEl.className = 'sign unknown';
+      signEl.textContent = 'geen limiet';
+      signLabel.textContent = 'indicatief (OSM)';
+    } else {
+      signEl.className = 'sign';
+      signEl.textContent = String(l.kmh);
+      signLabel.textContent = l.unsure ? 'indicatief · kan afwijken' : 'indicatief (OSM)';
+    }
+    checkWarning();
+  }
+
+  // ---- GPS ----
+  function onPosition(pos) {
+    lastFix = Date.now();
+    var c = pos.coords;
+    var acc = c.accuracy;
+
+    if (acc <= 20) setStatus('good', 'GPS goed');
+    else if (acc <= 50) setStatus('ok', 'GPS matig');
+    else setStatus('bad', 'GPS zwak');
+
+    lastPos = { lat: c.latitude, lon: c.longitude, acc: acc };
+    var hasSpeed = !(c.speed === null || c.speed === undefined || isNaN(c.speed));
+    if (hasSpeed && c.speed > 1.5 && c.heading !== null && !isNaN(c.heading)) {
+      lastHeading = c.heading;
+    }
+
+    updateMap(c.latitude, c.longitude);
+    maybeQuery(c.latitude, c.longitude);
+    updateLimit();
+
+    if (!hasSpeed) { showSpeed(shown, true); return; }
+    var kmh = Math.max(0, c.speed * 3.6);
+    if (kmh < 2) kmh = 0; // GPS-ruis bij stilstand wegfilteren
+    shown = shown === 0 ? kmh : shown * 0.4 + kmh * 0.6; // lichte afvlakking
+    if (kmh === 0) shown = 0;
+    showSpeed(shown, false);
+  }
+
+  function onError(err) {
+    if (err.code === 1) {
+      setStatus('bad', 'Geen toestemming voor locatie');
+      startErr.textContent = 'Locatie geweigerd. Zet het aan via Instellingen > Privacy > Locatievoorzieningen > Safari-websites (of DriveMode).';
+      startErr.classList.remove('hidden');
+      startEl.classList.remove('hidden');
+      stopWatch();
+    } else {
+      setStatus('bad', 'Geen GPS-signaal');
+      showSpeed(shown, true);
+    }
+  }
+
+  function stopWatch() {
+    if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+  }
+  function startWatch() {
+    stopWatch();
+    watchId = navigator.geolocation.watchPosition(onPosition, onError, {
+      enableHighAccuracy: true, maximumAge: 0, timeout: 15000
+    });
+  }
+
+  async function requestWakeLock() {
+    try {
+      if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
+    } catch (e) { /* niet kritiek */ }
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && watchId !== null) {
+      requestWakeLock();
+      startWatch();
+    }
+  });
+
+  // Elke seconde: komt er nog verse GPS-data binnen?
+  setInterval(function () {
+    if (watchId === null) return;
+    if (Date.now() - lastFix > 5000) {
+      setStatus('bad', 'Geen GPS-signaal');
+      showSpeed(shown, true);
+    }
+  }, 1000);
+
+  document.getElementById('startBtn').addEventListener('click', function () {
+    if (!('geolocation' in navigator)) {
+      startErr.textContent = 'Dit apparaat ondersteunt geen GPS.';
+      startErr.classList.remove('hidden');
+      return;
+    }
+    startErr.classList.add('hidden');
+    startEl.classList.add('hidden');
+    setStatus('off', 'GPS zoeken…');
+    requestWakeLock();
+    startWatch();
+  });
+})();
+</script>
+</body>
+</html>
