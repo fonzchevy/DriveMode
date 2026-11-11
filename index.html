@@ -155,10 +155,11 @@
     'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
     'https://overpass.private.coffee/api/interpreter'
   ];
-  var QUERY_RADIUS = 700;     // meter rondom je positie
-  var REQUERY_DIST = 350;     // nieuwe wegen ophalen na zoveel meter
-  var MIN_QUERY_GAP = 12000;  // minimaal 12 s tussen verzoeken
-  var SERVER_TIMEOUT = 12000; // max wachttijd per server
+  var RADIUS_MIN = 250;       // zoekstraal in de stad (meter)
+  var RADIUS_MAX = 800;       // zoekstraal op de snelweg (meter)
+  var RADIUS_SECONDS = 20;    // straal = zoveel seconden rijden vooruit
+  var MIN_QUERY_GAP = 8000;   // minimaal 8 s tussen verzoeken
+  var SERVER_TIMEOUT = 20000; // max wachttijd per server
   var MATCH_MAX_DIST = 35;    // verder van een weg = onbekend
   var MAX_ACCURACY = 60;      // GPS slechter dan dit = onbekend
   var WARN_MARGIN = 3;        // km/u boven limiet voor waarschuwing
@@ -174,7 +175,8 @@
 
   var watchId = null, wakeLock = null, lastFix = 0, shown = 0, isStale = true;
   var map = null, marker = null, mapCenter = null;
-  var ways = [], queryPos = null, queryTime = 0, querying = false, backoffUntil = 0, serverIdx = 0;
+  var ways = [], queryPos = null, queryRadius = 0, queryTime = 0;
+  var querying = false, backoffUntil = 0, serverIdx = 0;
   var lastPos = null, lastHeading = null, currentWayId = null, currentLimit = null;
 
   // ---- Hulpfuncties ----
@@ -268,21 +270,23 @@
     return tryNext();
   }
 
-  function maybeQuery(lat, lon) {
+  function maybeQuery(lat, lon, kmh) {
     var now = Date.now();
     if (querying || now < backoffUntil) return;
     if (queryPos) {
-      if (distM(queryPos[0], queryPos[1], lat, lon) < REQUERY_DIST) return;
+      if (distM(queryPos[0], queryPos[1], lat, lon) < queryRadius * 0.5) return;
       if (now - queryTime < MIN_QUERY_GAP) return;
     }
+    var radius = Math.round(Math.max(RADIUS_MIN, Math.min(RADIUS_MAX, (kmh / 3.6) * RADIUS_SECONDS)));
     querying = true;
-    var q = '[out:json][timeout:10];way(around:' + QUERY_RADIUS + ',' + lat.toFixed(6) + ',' + lon.toFixed(6) + ')' +
+    var q = '[out:json][timeout:25];way(around:' + radius + ',' + lat.toFixed(6) + ',' + lon.toFixed(6) + ')' +
       '["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|living_street|road|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"];out tags geom;';
     fetchOverpass(q).then(function (d) {
       ways = (d.elements || []).filter(function (e) {
         return e.type === 'way' && e.geometry && e.geometry.length > 1;
       });
       queryPos = [lat, lon];
+      queryRadius = radius;
       queryTime = Date.now();
       updateLimit();
     }).catch(function () {
@@ -331,6 +335,14 @@
     return Math.round(n);
   }
 
+  // Zone-label met een echt getal, bijv. "NL:30" (30-zone)
+  function zoneSpeed(tags) {
+    var z = tags['zone:maxspeed'] || tags['maxspeed:zone'];
+    if (!z) return null;
+    var m = String(z).trim().match(/^[A-Z]{2}:(\d+)$/);
+    return m ? parseInt(m[1], 10) : null;
+  }
+
   function inTimeRanges(str) {
     var now = new Date(), mins = now.getHours() * 60 + now.getMinutes();
     return str.split(',').some(function (r) {
@@ -365,7 +377,10 @@
     if (forward === true && tags['maxspeed:forward:conditional']) cond = tags['maxspeed:forward:conditional'];
     if (forward === false && tags['maxspeed:backward:conditional']) cond = tags['maxspeed:backward:conditional'];
     var v = parseSpeed(base);
-    if (v === null) return null;
+    if (v === null) {
+      var z = zoneSpeed(tags);
+      return z !== null ? { kmh: z, unsure: false } : null;
+    }
     if (v === 'none') return { kmh: 'none', unsure: false };
     return applyConditional(v, cond);
   }
@@ -417,16 +432,17 @@
       lastHeading = c.heading;
     }
 
-    updateMap(c.latitude, c.longitude);
-    maybeQuery(c.latitude, c.longitude);
-    updateLimit();
+    if (hasSpeed) {
+      var kmh = Math.max(0, c.speed * 3.6);
+      if (kmh < 2) kmh = 0; // GPS-ruis bij stilstand wegfilteren
+      shown = shown === 0 ? kmh : shown * 0.4 + kmh * 0.6; // lichte afvlakking
+      if (kmh === 0) shown = 0;
+    }
 
-    if (!hasSpeed) { showSpeed(shown, true); return; }
-    var kmh = Math.max(0, c.speed * 3.6);
-    if (kmh < 2) kmh = 0; // GPS-ruis bij stilstand wegfilteren
-    shown = shown === 0 ? kmh : shown * 0.4 + kmh * 0.6; // lichte afvlakking
-    if (kmh === 0) shown = 0;
-    showSpeed(shown, false);
+    updateMap(c.latitude, c.longitude);
+    maybeQuery(c.latitude, c.longitude, shown);
+    updateLimit();
+    showSpeed(shown, !hasSpeed);
   }
 
   function onError(err) {
